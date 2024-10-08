@@ -254,6 +254,8 @@ class KonfluxRebaser:
                     group=self._runtime.group,
                     el_target=f'el{parent_metadata.branch_el_target()}',
                     engine=Engine.KONFLUX)
+                if not build:
+                    raise IOError(f"Parent image {member} is not found.")
                 return build.image_pullspec, build.embargoed
 
             return original_parent, False
@@ -1436,8 +1438,15 @@ class KonfluxRebaser:
             else:
                 meta = self._runtime.late_resolve_image(distgit)
                 assert meta is not None
-                _, v, r = meta.get_latest_build_info()
-                image_tag = '{}:{}-{}'.format(meta.image_name_short, v, r)
+                build = self.konflux_db.get_latest_build(
+                    name=meta.distgit_key,
+                    assembly=self._runtime.assembly,
+                    group=self._runtime.group,
+                    el_target=f'el{meta.branch_el_target()}',
+                    engine=Engine.KONFLUX)
+                if not build:
+                    raise ValueError(f'Could not find latest build for {meta.distgit_key}')
+                image_tag = build.image_pullspec
 
             if metadata.distgit_key != meta.distgit_key:
                 if metadata.distgit_key not in meta.config.dependents:
