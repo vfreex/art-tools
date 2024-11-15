@@ -472,12 +472,15 @@ async def cmd_gather_async(cmd: Union[List[str], str], check: bool = True, **kwa
         kwargs["stderr"] = asyncio.subprocess.PIPE
 
     # Propagate trace context to subprocess
-    env = kwargs.get("env", {})
     carrier = {}
     TraceContextTextMapPropagator().inject(carrier)
     if "traceparent" in carrier:
+        env = kwargs.get("env")
+        if env is None:
+            # Per Popen doc, a None env means "inheriting the current process’ environment".
+            # To inject the trace context, we need to copy the current environment.
+            env = kwargs["env"] = os.environ.copy()
         env["TRACEPARENT"] = carrier["traceparent"]
-        kwargs["env"] = env
 
     logger.info("Executing:cmd_gather_async %s with env vars %s", cmd_list, kwargs.get("env", {}))
 
