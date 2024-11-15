@@ -464,7 +464,7 @@ async def cmd_gather_async(cmd: Union[List[str], str], check: bool = True, **kwa
     span = trace.get_current_span()
     span.set_attribute("pyartcd.param.cmd", cmd_list)
 
-    logger.info("Executing:cmd_gather_async %s", cmd_list)
+    # logger.info("Executing:cmd_gather_async %s", cmd_list)
     # capture stdout and stderr if they are not set in kwargs
     if "stdout" not in kwargs:
         kwargs["stdout"] = asyncio.subprocess.PIPE
@@ -478,6 +478,8 @@ async def cmd_gather_async(cmd: Union[List[str], str], check: bool = True, **kwa
     if "traceparent" in carrier:
         env["TRACEPARENT"] = carrier["traceparent"]
         kwargs["env"] = env
+
+    logger.info("Executing:cmd_gather_async %s with env vars %s", cmd_list, kwargs.get("env", {}))
 
     proc = await asyncio.subprocess.create_subprocess_exec(cmd_list[0], *cmd_list[1:], **kwargs)
     stdout, stderr = await proc.communicate()
