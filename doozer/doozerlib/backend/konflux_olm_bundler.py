@@ -20,7 +20,7 @@ from dockerfile_parse import DockerfileParser
 
 from doozerlib import constants, util
 from doozerlib.backend.build_repo import BuildRepo
-from doozerlib.backend.konflux_client import KonfluxClient, resource
+from doozerlib.backend.konflux_client import KonfluxClient, KubeCondition, resource
 from doozerlib.image import ImageMetadata
 from doozerlib.record_logger import RecordLogger
 from doozerlib.source_resolver import SourceResolution, SourceResolver
@@ -134,7 +134,9 @@ class KonfluxOlmBundleRebaser:
         async with aiofiles.open(file_path, 'r') as f:
             package_yaml = yaml.safe_load(await f.read())
         package_name = package_yaml['packageName']
-        channel_name = str(package_yaml['channels'][0]['name'])
+        channel = package_yaml['channels'][0]
+        channel_name = str(channel['name'])
+        csv_name = str(channel['currentCSV'])
 
         # Copy the operator's manifests to the bundle directory
         bundle_manifests_dir.mkdir(parents=True, exist_ok=True)
@@ -195,9 +197,11 @@ class KonfluxOlmBundleRebaser:
         await self._create_container_yaml(filename)
 
         # Write .oit files. Those files are used by Doozer for additional information about the bundle
-        await self._create_oit_files(bundle_dir, operator_nvr, all_found_operands)
+        await self._create_oit_files(package_name, csv_name, bundle_dir, operator_nvr, all_found_operands)
 
-    async def _create_oit_files(self, bundle_dir: Path, operator_nvr: str, operands: Dict[str, Tuple[str, str, str]]):
+    async def _create_oit_files(
+            self, package_name: str, csv_name: str,
+            bundle_dir: Path, operator_nvr: str, operands: Dict[str, Tuple[str, str, str]]):
         """ Create .oit files
 
         :param bundle_dir: The directory where the bundle is located.
@@ -207,6 +211,8 @@ class KonfluxOlmBundleRebaser:
         oit_dir = bundle_dir / '.oit'
         oit_dir.mkdir(exist_ok=True)
         content = yaml.safe_dump({
+            "package_name": package_name,
+            "csv_name": csv_name,
             "operator": {
                 "nvr": operator_nvr,
             },
@@ -459,6 +465,8 @@ class KonfluxOlmBundleBuilder:
             # Load olm_bundle_info.yaml to get the operator and operand NVRs
             async with aiofiles.open(bundle_build_repo.local_dir / '.oit' / 'olm_bundle_info.yaml', 'r') as f:
                 bundle_info = yaml.safe_load(await f.read())
+            package_name = bundle_info['package_name']
+            csv_name = bundle_info['csv_name']
             operator_nvr = bundle_info['operator']['nvr']
             record['operator_nvr'] = operator_nvr
             operand_nvrs = sorted({info['nvr'] for info in bundle_info['operands'].values()})
@@ -477,22 +485,29 @@ class KonfluxOlmBundleBuilder:
                 # Update the Konflux DB with status PENDING
                 outcome = KonfluxBuildOutcome.PENDING
                 if not self.dry_run:
-                    await self._update_konflux_db(metadata, bundle_build_repo, pipelinerun, outcome, operator_nvr, operand_nvrs)
+                    await self._update_konflux_db(metadata, bundle_build_repo, package_name, csv_name, pipelinerun, outcome, operator_nvr, operand_nvrs)
                 else:
                     logger.warning("Dry run: Would update Konflux DB for %s with outcome %s", pipelinerun_name, outcome)
 
                 # Wait for the PipelineRun to complete
                 pipelinerun, pods = await konflux_client.wait_for_pipelinerun(pipelinerun_name, self.konflux_namespace)
-                status = pipelinerun.status.conditions[0].status
-                outcome = KonfluxBuildOutcome.SUCCESS if status == "True" else KonfluxBuildOutcome.FAILURE
-                logger.info(f"PipelineRun {url} completed with outcome {outcome}")
+                logger.info("PipelineRun %s completed", pipelinerun_name)
+
+                succeeded_condition = KubeCondition.find_condition(pipelinerun, 'Succeeded')
+
+                if succeeded_condition.is_status_true():
+                    outcome = KonfluxBuildOutcome.SUCCESS
+                elif succeeded_condition.is_status_false():
+                    outcome = KonfluxBuildOutcome.FAILURE
+                else:
+                    outcome = KonfluxBuildOutcome.PENDING
 
                 # Update the Konflux DB with the final outcome
                 if not self.dry_run:
-                    await self._update_konflux_db(metadata, bundle_build_repo, pipelinerun, outcome, operator_nvr, operand_nvrs)
+                    await self._update_konflux_db(metadata, bundle_build_repo, package_name, csv_name, pipelinerun, outcome, operator_nvr, operand_nvrs)
                 else:
                     logger.warning("Dry run: Would update Konflux DB for %s with outcome %s", pipelinerun_name, outcome)
-                if status != "True":
+                if outcome is not KonfluxBuildOutcome.SUCCESS:
                     error = KonfluxOlmBundleBuildError(f"Konflux bundle image build for {metadata.distgit_key} failed", pipelinerun_name, pipelinerun)
                     logger.error(f"{error}: {url}")
                 else:
@@ -553,6 +568,7 @@ class KonfluxOlmBundleBuilder:
             building_arches=["x86_64"],  # We always build bundles on x86_64
             additional_tags=list(additional_tags),
             skip_checks=skip_checks,
+            hermetic=True,
             pipelinerun_template_url=self.pipelinerun_template_url,
         )
         url = konflux_client.build_pipeline_url(pipelinerun)
@@ -560,6 +576,7 @@ class KonfluxOlmBundleBuilder:
         return pipelinerun, url
 
     async def _update_konflux_db(self, metadata: ImageMetadata, build_repo: BuildRepo,
+                                 bundle_package_name: str, bundle_csv_name: str,
                                  pipelinerun: resource.ResourceInstance, outcome: KonfluxBuildOutcome,
                                  operator_nvr: str, operand_nvrs: list[str]):
         logger = self._logger.getChild(f"[{metadata.distgit_key}]")
@@ -603,6 +620,8 @@ class KonfluxOlmBundleBuilder:
                 'build_id': pipelinerun_name,
                 'build_pipeline_url': build_pipeline_url,
                 'pipeline_commit': 'n/a',  # TODO: populate this
+                'bundle_package_name': bundle_package_name,
+                'bundle_csv_name': bundle_csv_name,
                 'operator_nvr': operator_nvr,
                 'operand_nvrs': operand_nvrs,
             }
