@@ -435,7 +435,7 @@ class DistGitRepo(object):
         # timeout value counterproductive. Limit to 5 simultaneous pushes.
         timeout = str(self.runtime.global_opts['rhpkg_push_timeout'])
         await exectools.cmd_assert_async(
-            ["timeout", f"{timeout}", "git", "push", "--follow-tags"], cwd=self.distgit_dir
+            ["timeout", f"{timeout}", "git", "push", "origin", "HEAD", "--follow-tags"], cwd=self.distgit_dir
         )
 
     def get_branch_el(self) -> Optional[int]:
