@@ -253,9 +253,7 @@ class DistGitRepo(object):
                                 exectools.cmd_assert(
                                     f'git -C {self.distgit_dir} remote add origin {self.metadata.distgit_remote_url()}'
                                 )
-                                exectools.cmd_assert(
-                                    f'git -C {self.distgit_dir} checkout --orphan {distgit_branch}'
-                                )
+                                exectools.cmd_assert(f'git -C {self.distgit_dir} checkout --orphan {distgit_branch}')
                             else:
                                 raise
                         else:
