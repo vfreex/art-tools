@@ -617,9 +617,14 @@ class GenAssemblyCli:
                             f"{RHCOS_RELEASES_STREAM_URL}/{url_key}/builds/{self.rhcos_version}/{arch}/meta.json"
                         )
                         session = requests.Session()
-                        session.mount('https://', HTTPAdapter(max_retries=Retry(total=3)))
+                        retry_strategy = Retry(
+                            total=3,
+                            backoff_factor=2,
+                            status_forcelist=[429, 500, 502, 503, 504]
+                        )
+                        session.mount('https://', HTTPAdapter(max_retries=retry_strategy))
                         try:
-                            response = session.get(rhcos_build_url)
+                            response = session.get(rhcos_build_url, timeout=30)
                             response.raise_for_status()
                             rhcos_meta_json = response.json()
                         except requests.exceptions.HTTPError as e:
